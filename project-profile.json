@@ -1,0 +1,11 @@
+{
+  "projectId": "pair-wise-yy-20",
+  "projectName": "铁路列车运行图编辑器",
+  "category": "调度编辑器",
+  "businessDomain": "铁路运输",
+  "projectForm": "完整项目",
+  "codeScope": "frontend",
+  "languages": "Angular, TypeScript, PrimeNG, NgRx, RxJS, Angular Router",
+  "summary": "面向铁路调度员的列车运行图编辑工具，支持运行线拖拽、停站与通过调整、冲突实时检查、缩放筛选、批量平移、JSON 导入和区间打印。",
+  "containerized": false
+}

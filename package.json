@@ -1,0 +1,34 @@
+{
+  "name": "pair-wise-yy-20",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "bash scripts/ng-with-fixed-node.sh serve",
+    "dev": "bash scripts/ng-with-fixed-node.sh serve",
+    "build": "bash scripts/ng-with-fixed-node.sh build",
+    "preview": "bash scripts/ng-with-fixed-node.sh serve --configuration production"
+  },
+  "dependencies": {
+    "@angular/animations": "^20.3.0",
+    "@angular/common": "^20.3.0",
+    "@angular/compiler": "^20.3.0",
+    "@angular/core": "^20.3.0",
+    "@angular/forms": "^20.3.0",
+    "@angular/platform-browser": "^20.3.0",
+    "@angular/router": "^20.3.0",
+    "@ngrx/effects": "^20.0.0",
+    "@ngrx/store": "^20.0.0",
+    "@primeuix/themes": "^1.2.3",
+    "primeicons": "^7.0.0",
+    "primeng": "^20.1.1",
+    "rxjs": "~7.8.2",
+    "tslib": "^2.8.1",
+    "zone.js": "~0.15.1"
+  },
+  "devDependencies": {
+    "@angular/build": "^20.3.0",
+    "@angular/cli": "^20.3.0",
+    "@angular/compiler-cli": "^20.3.0",
+    "typescript": "~5.9.2"
+  }
+}
