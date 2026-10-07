@@ -1,6 +1,6 @@
 import { createFeatureSelector, createSelector } from '@ngrx/store';
 import { TimetableState } from '../types/timetable';
-import { computeConflicts, filterTrains } from '../utils/timetable-utils';
+import { filterTrains, getQueuedPlanIds } from '../utils/timetable-utils';
 
 export const selectTimetableState = createFeatureSelector<TimetableState>('timetable');
 
@@ -11,6 +11,11 @@ export const selectSelectedTrainId = createSelector(selectTimetableState, (state
 export const selectBatchSelection = createSelector(selectTimetableState, (state) => state.batchSelection);
 export const selectPrintSectionId = createSelector(selectTimetableState, (state) => state.printSectionId);
 export const selectNotices = createSelector(selectTimetableState, (state) => state.notices);
+export const selectConflictsState = createSelector(selectTimetableState, (state) => state.conflicts);
+
+export const selectPlans = createSelector(selectNetwork, (network) => network.plans);
+
+export const selectQueuedPlanIds = createSelector(selectNetwork, (network) => getQueuedPlanIds(network));
 
 export const selectVisibleTrains = createSelector(
   selectNetwork,
@@ -24,8 +29,19 @@ export const selectSelectedTrain = createSelector(
   (network, trainId) => network.trains.find((train) => train.id === trainId) ?? null,
 );
 
-export const selectConflicts = createSelector(selectNetwork, selectVisibleTrains, (network, visible) =>
-  computeConflicts(network, new Set(visible.map((train) => train.id))),
+/**
+ * 冲突记录由状态统一维护（增量重算），此处按当前可见列车过滤。
+ * 施工容量互斥记录不涉及具体列车，始终保留。
+ */
+export const selectConflicts = createSelector(
+  selectConflictsState,
+  selectVisibleTrains,
+  (conflicts, visibleTrains) => {
+    const visibleIds = new Set(visibleTrains.map((train) => train.id));
+    return conflicts.filter(
+      (conflict) => conflict.trainIds.length === 0 || conflict.trainIds.every((id) => visibleIds.has(id)),
+    );
+  },
 );
 
 export const selectConflictSummary = createSelector(selectConflicts, (conflicts) => ({
@@ -35,6 +51,7 @@ export const selectConflictSummary = createSelector(selectConflicts, (conflicts)
   headway: conflicts.filter((conflict) => conflict.type === 'headway').length,
   track: conflicts.filter((conflict) => conflict.type === 'track').length,
   overtake: conflicts.filter((conflict) => conflict.type === 'overtake').length,
+  construction: conflicts.filter((conflict) => conflict.type === 'construction').length,
 }));
 
 export const selectSelectedConflicts = createSelector(

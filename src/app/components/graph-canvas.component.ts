@@ -21,7 +21,7 @@ import {
   ViewportState,
 } from '../types/timetable';
 import { formatTime } from '../utils/time';
-import { computeConflicts, visibleTimeRange } from '../utils/timetable-utils';
+import { computeConflicts, getQueuedPlanIds, visibleTimeRange } from '../utils/timetable-utils';
 
 interface Point {
   x: number;
@@ -259,6 +259,7 @@ export class GraphCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
     const geometry = this.getGeometry(width, height);
     this.drawGrid(context, geometry, width, height);
     this.drawConflicts(context, geometry);
+    this.drawConstructionRestrictions(context, geometry);
     this.drawTrains(context, geometry);
     this.drawAxis(context, geometry, width, height);
   }
@@ -452,6 +453,41 @@ export class GraphCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
     context.restore();
   }
 
+  private drawConstructionRestrictions(
+    context: CanvasRenderingContext2D,
+    geometry: ReturnType<GraphCanvasComponent['getGeometry']>,
+  ): void {
+    const queuedIds = getQueuedPlanIds(this.network);
+    context.save();
+    context.beginPath();
+    context.rect(geometry.left, geometry.top, geometry.right - geometry.left, geometry.bottom - geometry.top);
+    context.clip();
+    this.network.plans
+      .filter((plan) => !queuedIds.has(plan.id))
+      .forEach((plan) => {
+        const section = this.network.sections.find((item) => item.id === plan.sectionId);
+        if (!section) return;
+        const from = this.network.stations.find((item) => item.id === section.fromStationId);
+        const to = this.network.stations.find((item) => item.id === section.toStationId);
+        if (!from || !to) return;
+        const x1 = this.timeToX(plan.startTime, geometry);
+        const x2 = this.timeToX(plan.endTime, geometry);
+        const y1 = this.kmToY(Math.min(from.km, to.km), geometry);
+        const y2 = this.kmToY(Math.max(from.km, to.km), geometry);
+        context.fillStyle = 'rgba(217, 119, 6, 0.10)';
+        context.fillRect(x1, y1, Math.max(2, x2 - x1), Math.max(2, y2 - y1));
+        context.strokeStyle = 'rgba(217, 119, 6, 0.55)';
+        context.lineWidth = 1;
+        context.setLineDash([4, 3]);
+        context.strokeRect(x1, y1, Math.max(2, x2 - x1), Math.max(2, y2 - y1));
+        context.setLineDash([]);
+        context.fillStyle = '#8a4b08';
+        context.font = '10px "Noto Sans SC", sans-serif';
+        context.fillText(`${plan.speedLimitKmh} km/h`, x1 + 4, y1 + 12);
+      });
+    context.restore();
+  }
+
   private drawTrains(
     context: CanvasRenderingContext2D,
     geometry: ReturnType<GraphCanvasComponent['getGeometry']>,
@@ -635,6 +671,23 @@ export class GraphCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
     context.fillText(`追踪间隔 ≥ ${section.minHeadwayMin} 分 · ${section.distanceKm.toFixed(1)} km`, width - 28, 26);
     context.textAlign = 'left';
     context.fillText('铁路调度运行图系统 · 打印件', 24, height - 9);
+
+    // 当前区间施工限制
+    const queuedIds = getQueuedPlanIds(this.network);
+    const activePlans = this.network.plans.filter(
+      (plan) => plan.sectionId === section.id && !queuedIds.has(plan.id),
+    );
+    if (activePlans.length > 0) {
+      context.fillStyle = '#8a4b08';
+      context.font = '11px "Noto Sans SC", sans-serif';
+      const planText = activePlans
+        .map(
+          (plan) =>
+            `${plan.direction === 'up' ? '上行' : '下行'} ${formatTime(plan.startTime)}–${formatTime(plan.endTime)} 限速 ${plan.speedLimitKmh} km/h`,
+        )
+        .join('；');
+      context.fillText(`施工限制：${planText}`, geometry.left, 44);
+    }
   }
 
   private findHitTrain(x: number, y: number): string | null {

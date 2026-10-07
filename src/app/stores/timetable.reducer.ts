@@ -5,21 +5,24 @@ import {
 } from '../types/timetable';
 import {
   addNotice,
+  addPlan,
   batchShift,
   clearBatchSelection,
   dismissNotice,
   importNetwork,
   moveTrain,
+  removePlan,
   resetViewport,
   restorePersistedState,
   selectTrain,
   setPrintSection,
   toggleBatchTrain,
   updateFilter,
+  updatePlan,
   updateTrainStop,
   updateViewport,
 } from './timetable.actions';
-import { createMockNetwork, shiftTrain, updateStop } from '../utils/timetable-utils';
+import { computeConflicts, createMockNetwork, recomputeConflicts, shiftTrain, updateStop } from '../utils/timetable-utils';
 
 const INITIAL_VIEWPORT: ViewportState = {
   scaleX: 1.25,
@@ -28,8 +31,10 @@ const INITIAL_VIEWPORT: ViewportState = {
   offsetY: 0,
 };
 
+const initialNetwork = createMockNetwork();
+
 export const initialState: TimetableState = {
-  network: createMockNetwork(),
+  network: initialNetwork,
   filter: {
     query: '',
     categories: [],
@@ -40,6 +45,7 @@ export const initialState: TimetableState = {
   batchSelection: [],
   printSectionId: null,
   notices: [],
+  conflicts: computeConflicts(initialNetwork),
 };
 
 export const timetableReducer = createReducer(
@@ -68,38 +74,78 @@ export const timetableReducer = createReducer(
     viewport: { ...state.viewport, ...viewport },
   })),
   on(resetViewport, (state) => ({ ...state, viewport: INITIAL_VIEWPORT })),
-  on(moveTrain, (state, { trainId, deltaMinutes }) => ({
-    ...state,
-    network: {
+  on(moveTrain, (state, { trainId, deltaMinutes }) => {
+    const network = {
       ...state.network,
       trains: state.network.trains.map((train) =>
         train.id === trainId ? shiftTrain(train, deltaMinutes) : train,
       ),
-    },
-  })),
+    };
+    return {
+      ...state,
+      network,
+      conflicts: recomputeConflicts(state.conflicts, state.network, network, [trainId]),
+    };
+  }),
   on(batchShift, (state, { deltaMinutes }) => {
     const ids = state.batchSelection.length > 0
       ? new Set(state.batchSelection)
       : new Set(state.selectedTrainId ? [state.selectedTrainId] : []);
+    const network = {
+      ...state.network,
+      trains: state.network.trains.map((train) =>
+        ids.has(train.id) ? shiftTrain(train, deltaMinutes) : train,
+      ),
+    };
     return {
       ...state,
-      network: {
-        ...state.network,
-        trains: state.network.trains.map((train) =>
-          ids.has(train.id) ? shiftTrain(train, deltaMinutes) : train,
-        ),
-      },
+      network,
+      conflicts: recomputeConflicts(state.conflicts, state.network, network, [...ids]),
     };
   }),
-  on(updateTrainStop, (state, { trainId, stationId, changes }) => ({
-    ...state,
-    network: {
+  on(updateTrainStop, (state, { trainId, stationId, changes }) => {
+    const network = {
       ...state.network,
       trains: state.network.trains.map((train) =>
         train.id === trainId ? updateStop(train, stationId, changes) : train,
       ),
-    },
-  })),
+    };
+    return {
+      ...state,
+      network,
+      conflicts: recomputeConflicts(state.conflicts, state.network, network, [trainId]),
+    };
+  }),
+  on(addPlan, (state, { plan }) => {
+    const network = { ...state.network, plans: [...state.network.plans, plan] };
+    return {
+      ...state,
+      network,
+      conflicts: recomputeConflicts(state.conflicts, state.network, network, [], [plan.id]),
+    };
+  }),
+  on(updatePlan, (state, { plan }) => {
+    const network = {
+      ...state.network,
+      plans: state.network.plans.map((item) => (item.id === plan.id ? plan : item)),
+    };
+    return {
+      ...state,
+      network,
+      conflicts: recomputeConflicts(state.conflicts, state.network, network, [], [plan.id]),
+    };
+  }),
+  on(removePlan, (state, { planId }) => {
+    const network = {
+      ...state.network,
+      plans: state.network.plans.filter((plan) => plan.id !== planId),
+    };
+    return {
+      ...state,
+      network,
+      conflicts: recomputeConflicts(state.conflicts, state.network, network, [], [planId]),
+    };
+  }),
   on(setPrintSection, (state, { sectionId }) => ({ ...state, printSectionId: sectionId })),
   on(importNetwork, (state, { network }) => ({
     ...state,
@@ -107,7 +153,8 @@ export const timetableReducer = createReducer(
     selectedTrainId: network.trains[0]?.id ?? null,
     batchSelection: [],
     viewport: INITIAL_VIEWPORT,
-    notices: [...state.notices, `已导入 ${network.trains.length} 趟列车、${network.stations.length} 个车站`],
+    conflicts: computeConflicts(network),
+    notices: [...state.notices, `已导入 ${network.trains.length} 趟列车、${network.stations.length} 个车站、${network.plans.length} 项施工计划`],
   })),
   on(addNotice, (state, { message }) => ({ ...state, notices: [...state.notices, message] })),
   on(dismissNotice, (state, { index }) => ({

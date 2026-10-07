@@ -39,6 +39,10 @@ import { formatTime } from '../utils/time';
           </div>
           <strong>{{ conflict.title }}</strong>
           <p>{{ conflict.detail }}</p>
+          <div class="conflict-meta" *ngIf="conflict.planId">
+            <i class="pi pi-calendar-times"></i>
+            <span>施工计划 {{ conflict.planId }}</span>
+          </div>
           <div class="suggestion">
             <span>建议调整</span>
             <strong>
@@ -147,6 +151,15 @@ import { formatTime } from '../utils/time';
         line-height: 1.55;
       }
 
+      .conflict-meta {
+        display: flex;
+        gap: 5px;
+        align-items: center;
+        margin-bottom: 8px;
+        color: #8a4b08;
+        font-size: 10px;
+      }
+
       .suggestion {
         display: flex;
         align-items: center;
@@ -197,7 +210,8 @@ export class ConflictPanelComponent {
   typeLabel(conflict: TimetableConflict): string {
     if (conflict.type === 'headway') return '区间追踪';
     if (conflict.type === 'track') return '到发线占用';
-    return '越行风险';
+    if (conflict.type === 'overtake') return '越行风险';
+    return '施工影响';
   }
 
   formatTime(value: number): string {

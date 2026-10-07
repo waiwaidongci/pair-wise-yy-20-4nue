@@ -5,6 +5,7 @@ import {
   HostListener,
   inject,
   OnInit,
+  ViewChild,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Store } from '@ngrx/store';
@@ -19,6 +20,7 @@ import { TagModule } from 'primeng/tag';
 import { TooltipModule } from 'primeng/tooltip';
 import { combineLatest, map } from 'rxjs';
 import { ConflictPanelComponent } from '../components/conflict-panel.component';
+import { ConstructionPlanDialogComponent } from '../components/construction-plan-dialog.component';
 import { GraphCanvasComponent } from '../components/graph-canvas.component';
 import { TrainInspectorComponent } from '../components/train-inspector.component';
 import {
@@ -71,6 +73,7 @@ import { normalizeImportedNetwork } from '../utils/timetable-utils';
     GraphCanvasComponent,
     TrainInspectorComponent,
     ConflictPanelComponent,
+    ConstructionPlanDialogComponent,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
@@ -138,6 +141,13 @@ import { normalizeImportedNetwork } from '../utils/timetable-utils';
             ></p-button>
             <span class="toolbar__divider"></span>
             <p-button
+              icon="pi pi-calendar-plus"
+              label="施工计划"
+              severity="secondary"
+              size="small"
+              (onClick)="planDialog.open()"
+            ></p-button>
+            <p-button
               icon="pi pi-upload"
               label="导入 JSON"
               severity="secondary"
@@ -174,6 +184,11 @@ import { normalizeImportedNetwork } from '../utils/timetable-utils';
             <i class="pi pi-arrow-right-arrow-left"></i>
             <span>越行风险</span>
             <strong>{{ vm.summary.overtake }}</strong>
+          </div>
+          <div class="summary-item">
+            <i class="pi pi-calendar-times"></i>
+            <span>施工影响</span>
+            <strong>{{ vm.summary.construction }}</strong>
           </div>
           <div class="summary-bar__spacer"></div>
           <div class="batch-control">
@@ -241,6 +256,7 @@ import { normalizeImportedNetwork } from '../utils/timetable-utils';
                 <span><i class="legend-line"></i>运行线</span>
                 <span><i class="legend-stop"></i>停站</span>
                 <span><i class="legend-danger"></i>冲突</span>
+                <span><i class="legend-construction"></i>施工限速</span>
               </div>
             </div>
             <app-graph-canvas
@@ -309,6 +325,8 @@ import { normalizeImportedNetwork } from '../utils/timetable-utils';
           <p-button label="取消" severity="secondary" (onClick)="importDialog = false"></p-button>
         </ng-template>
       </p-dialog>
+
+      <app-construction-plan-dialog #planDialog></app-construction-plan-dialog>
     </ng-container>
   `,
 })
@@ -332,6 +350,8 @@ export class TimetableEditorPageComponent implements OnInit {
   batchMinutes = 5;
   printSectionId: string | null = null;
   importDialog = false;
+
+  @ViewChild('planDialog') planDialog!: ConstructionPlanDialogComponent;
 
   readonly viewModel$ = combineLatest({
     network: this.store.select(selectNetwork),

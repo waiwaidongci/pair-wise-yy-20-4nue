@@ -379,6 +379,12 @@ main {
   background: #c92734;
 }
 
+.legend-construction {
+  width: 16px;
+  height: 2px;
+  background: #d97706;
+}
+
 .graph-panel__footer {
   border-top: 1px solid #e1e7ee;
   border-bottom: 0;
@@ -542,6 +548,27 @@ main {
   color: #5e6f82;
   font-size: 11px;
   line-height: 1.55;
+}
+
+.related-cell {
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.related-train,
+.related-plan {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  color: #344b63;
+}
+
+.related-plan {
+  color: #8a4b08;
+}
+
+.related-none {
+  color: #9aa5b4;
 }
 
 .suggest-cell {
