@@ -2,10 +2,13 @@ import { inject, Injectable } from '@angular/core';
 import { Actions, createEffect, ofType } from '@ngrx/effects';
 import { Store } from '@ngrx/store';
 import {
+  addConstructionPlan,
   batchShift,
   importNetwork,
   moveTrain,
+  removeConstructionPlan,
   resetViewport,
+  updateConstructionPlan,
   updateFilter,
   updateTrainStop,
   updateViewport,
@@ -35,7 +38,15 @@ export class TimetableEffects {
   readonly announceChanges = createEffect(
     () =>
       this.actions$.pipe(
-        ofType(moveTrain, batchShift, updateTrainStop, importNetwork),
+        ofType(
+          moveTrain,
+          batchShift,
+          updateTrainStop,
+          importNetwork,
+          addConstructionPlan,
+          updateConstructionPlan,
+          removeConstructionPlan,
+        ),
         tap((action) => {
           if ('deltaMinutes' in action) {
             console.info('[运行图] 时刻已调整', action);

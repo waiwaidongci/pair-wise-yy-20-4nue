@@ -1,6 +1,7 @@
 import { createFeatureSelector, createSelector } from '@ngrx/store';
 import { TimetableState } from '../types/timetable';
-import { computeConflicts, filterTrains } from '../utils/timetable-utils';
+import { orderedConflicts, PlanStatus, reconcilePlans } from '../utils/conflict-engine';
+import { filterTrains } from '../utils/timetable-utils';
 
 export const selectTimetableState = createFeatureSelector<TimetableState>('timetable');
 
@@ -24,8 +25,26 @@ export const selectSelectedTrain = createSelector(
   (network, trainId) => network.trains.find((train) => train.id === trainId) ?? null,
 );
 
-export const selectConflicts = createSelector(selectNetwork, selectVisibleTrains, (network, visible) =>
-  computeConflicts(network, new Set(visible.map((train) => train.id))),
+/** 施工计划容量状态：哪些生效、哪些排队以及互斥原因 */
+export const selectPlanStatuses = createSelector(selectNetwork, (network): PlanStatus[] =>
+  reconcilePlans(network),
+);
+
+export const selectQueuedPlanStatuses = createSelector(selectPlanStatuses, (statuses) =>
+  statuses.filter((status) => !status.active),
+);
+
+/** 全部冲突记录（缓存增量维护），按当前可见运行线过滤；计划互斥记录无列车、始终保留 */
+export const selectConflicts = createSelector(
+  selectTimetableState,
+  selectVisibleTrains,
+  (state, visible) => {
+    const visibleIds = new Set(visible.map((train) => train.id));
+    return orderedConflicts(state.conflictCache).filter(
+      (conflict) =>
+        conflict.trainIds.length === 0 || conflict.trainIds.some((trainId) => visibleIds.has(trainId)),
+    );
+  },
 );
 
 export const selectConflictSummary = createSelector(selectConflicts, (conflicts) => ({
@@ -35,6 +54,8 @@ export const selectConflictSummary = createSelector(selectConflicts, (conflicts)
   headway: conflicts.filter((conflict) => conflict.type === 'headway').length,
   track: conflicts.filter((conflict) => conflict.type === 'track').length,
   overtake: conflicts.filter((conflict) => conflict.type === 'overtake').length,
+  construction: conflicts.filter((conflict) => conflict.type === 'construction').length,
+  planQueue: conflicts.filter((conflict) => conflict.type === 'plan-overlap').length,
 }));
 
 export const selectSelectedConflicts = createSelector(

@@ -44,14 +44,30 @@ export interface Train {
   selected: boolean;
 }
 
+/**
+ * 区间施工（临时限速）计划。
+ * start/end 为一天内的分钟数；同一区间同一方向同一时段只允许一份计划生效，
+ * 容量冲突的计划保持排队状态（见 construction-utils.reconcilePlans）。
+ */
+export interface ConstructionPlan {
+  id: string;
+  sectionId: string;
+  direction: TrainDirection;
+  start: number;
+  end: number;
+  speedLimitKmh: number;
+  note?: string;
+}
+
 export interface TrainNetwork {
   lineName: string;
   stations: Station[];
   sections: RailSection[];
   trains: Train[];
+  constructionPlans: ConstructionPlan[];
 }
 
-export type ConflictType = 'headway' | 'track' | 'overtake';
+export type ConflictType = 'headway' | 'track' | 'overtake' | 'construction' | 'plan-overlap';
 export type ConflictSeverity = 'danger' | 'warning';
 
 export interface TimeRange {
@@ -68,8 +84,19 @@ export interface TimetableConflict {
   trainIds: string[];
   sectionId?: string;
   stationId?: string;
+  /** 施工限速类冲突对应的计划 id */
+  planId?: string;
   timeRange: TimeRange;
   suggestedShift: TimeRange;
+}
+
+/**
+ * 冲突缓存：记录按稳定 id 存放，order 保留既有排列。
+ * 运行线或施工计划变化时只重建受影响的记录，其余记录原样保留。
+ */
+export interface ConflictCacheState {
+  byId: Record<string, TimetableConflict>;
+  order: string[];
 }
 
 export interface ViewportState {
@@ -93,6 +120,7 @@ export interface TimetableState {
   batchSelection: string[];
   printSectionId: string | null;
   notices: string[];
+  conflictCache: ConflictCacheState;
 }
 
 export interface ImportedNetworkFile {
@@ -100,4 +128,6 @@ export interface ImportedNetworkFile {
   stations?: Station[];
   sections?: RailSection[];
   trains?: Train[];
+  /** 旧版本导出数据中缺少该字段，导入时按空计划继续可用 */
+  constructionPlans?: ConstructionPlan[];
 }

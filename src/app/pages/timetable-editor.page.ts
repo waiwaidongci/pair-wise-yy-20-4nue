@@ -19,18 +19,22 @@ import { TagModule } from 'primeng/tag';
 import { TooltipModule } from 'primeng/tooltip';
 import { combineLatest, map } from 'rxjs';
 import { ConflictPanelComponent } from '../components/conflict-panel.component';
+import { ConstructionPlannerComponent } from '../components/construction-planner.component';
 import { GraphCanvasComponent } from '../components/graph-canvas.component';
 import { TrainInspectorComponent } from '../components/train-inspector.component';
 import {
+  addConstructionPlan,
   addNotice,
   batchShift,
   clearBatchSelection,
   importNetwork,
   moveTrain,
+  removeConstructionPlan,
   resetViewport,
   restorePersistedState,
   selectTrain,
   setPrintSection,
+  updateConstructionPlan,
   updateFilter,
   updateTrainStop,
   updateViewport,
@@ -42,6 +46,7 @@ import {
   selectFilter,
   selectNetwork,
   selectNotices,
+  selectPlanStatuses,
   selectPrintSectionId,
   selectSelectedTrainId,
   selectSelectedConflicts,
@@ -49,7 +54,7 @@ import {
   selectViewport,
   selectVisibleTrains,
 } from '../stores/timetable.selectors';
-import { ConflictType, TimetableConflict } from '../types/timetable';
+import { ConstructionPlan, TimetableConflict } from '../types/timetable';
 import { formatTime } from '../utils/time';
 import { normalizeImportedNetwork } from '../utils/timetable-utils';
 
@@ -71,6 +76,7 @@ import { normalizeImportedNetwork } from '../utils/timetable-utils';
     GraphCanvasComponent,
     TrainInspectorComponent,
     ConflictPanelComponent,
+    ConstructionPlannerComponent,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
@@ -138,6 +144,16 @@ import { normalizeImportedNetwork } from '../utils/timetable-utils';
             ></p-button>
             <span class="toolbar__divider"></span>
             <p-button
+              icon="pi pi-wrench"
+              label="施工计划"
+              severity="secondary"
+              size="small"
+              badge="{{ vm.planStatuses.length }}"
+              [badgeSeverity]="vm.queuedCount ? 'warn' : 'success'"
+              (onClick)="planDialog = true"
+            ></p-button>
+            <span class="toolbar__divider"></span>
+            <p-button
               icon="pi pi-upload"
               label="导入 JSON"
               severity="secondary"
@@ -174,6 +190,16 @@ import { normalizeImportedNetwork } from '../utils/timetable-utils';
             <i class="pi pi-arrow-right-arrow-left"></i>
             <span>越行风险</span>
             <strong>{{ vm.summary.overtake }}</strong>
+          </div>
+          <div class="summary-item">
+            <i class="pi pi-wrench"></i>
+            <span>施工限速</span>
+            <strong class="warning">{{ vm.summary.construction }}</strong>
+          </div>
+          <div class="summary-item">
+            <i class="pi pi-hourglass"></i>
+            <span>计划排队</span>
+            <strong class="warning">{{ vm.summary.planQueue }}</strong>
           </div>
           <div class="summary-bar__spacer"></div>
           <div class="batch-control">
@@ -241,6 +267,7 @@ import { normalizeImportedNetwork } from '../utils/timetable-utils';
                 <span><i class="legend-line"></i>运行线</span>
                 <span><i class="legend-stop"></i>停站</span>
                 <span><i class="legend-danger"></i>冲突</span>
+                <span><i class="legend-construction"></i>施工限速</span>
               </div>
             </div>
             <app-graph-canvas
@@ -266,6 +293,7 @@ import { normalizeImportedNetwork } from '../utils/timetable-utils';
           <aside class="workspace__right panel">
             <app-conflict-panel
               [conflicts]="vm.selectedConflicts"
+              [plans]="vm.network.constructionPlans"
               (conflictSelected)="focusConflict($event)"
             ></app-conflict-panel>
           </aside>
@@ -291,8 +319,9 @@ import { normalizeImportedNetwork } from '../utils/timetable-utils';
       >
         <div class="import-dialog">
           <p>
-            选择包含 <code>lineName</code>、<code>stations</code>、<code>sections</code> 和
-            <code>trains</code> 的 JSON 文件。导入前会检查车站引用和必填结构。
+            选择包含 <code>lineName</code>、<code>stations</code>、<code>sections</code>、
+            <code>trains</code> 及可选 <code>constructionPlans</code> 的 JSON 文件。导入前会检查车站引用和必填结构；
+            旧版本数据缺少施工计划字段时按空计划继续使用。
           </p>
           <label class="file-drop">
             <input type="file" accept="application/json,.json" (change)="onImportFile($event)" />
@@ -309,6 +338,16 @@ import { normalizeImportedNetwork } from '../utils/timetable-utils';
           <p-button label="取消" severity="secondary" (onClick)="importDialog = false"></p-button>
         </ng-template>
       </p-dialog>
+
+      <app-construction-planner
+        [(visible)]="planDialog"
+        [stations]="(viewModel$ | async)?.network?.stations ?? []"
+        [sections]="(viewModel$ | async)?.network?.sections ?? []"
+        [statuses]="(viewModel$ | async)?.planStatuses ?? []"
+        (planAdded)="addPlan($event)"
+        (planUpdated)="updatePlan($event.planId, $event.changes)"
+        (planRemoved)="removePlan($event)"
+      ></app-construction-planner>
     </ng-container>
   `,
 })
@@ -332,6 +371,7 @@ export class TimetableEditorPageComponent implements OnInit {
   batchMinutes = 5;
   printSectionId: string | null = null;
   importDialog = false;
+  planDialog = false;
 
   readonly viewModel$ = combineLatest({
     network: this.store.select(selectNetwork),
@@ -346,7 +386,13 @@ export class TimetableEditorPageComponent implements OnInit {
     summary: this.store.select(selectConflictSummary),
     printSectionId: this.store.select(selectPrintSectionId),
     notices: this.store.select(selectNotices),
-  }).pipe(map((state) => state));
+    planStatuses: this.store.select(selectPlanStatuses),
+  }).pipe(
+    map((state) => ({
+      ...state,
+      queuedCount: state.planStatuses.filter((status) => !status.active).length,
+    })),
+  );
 
   ngOnInit(): void {
     try {
@@ -449,6 +495,19 @@ export class TimetableEditorPageComponent implements OnInit {
     if (!this.printSectionId) return;
     this.store.dispatch(setPrintSection({ sectionId: this.printSectionId }));
     setTimeout(() => window.print(), 300);
+  }
+
+  addPlan(plan: ConstructionPlan): void {
+    this.store.dispatch(addConstructionPlan({ plan }));
+    this.store.dispatch(addNotice({ message: `已登记施工计划：${plan.speedLimitKmh} km/h 限速` }));
+  }
+
+  updatePlan(planId: string, changes: Partial<ConstructionPlan>): void {
+    this.store.dispatch(updateConstructionPlan({ planId, changes }));
+  }
+
+  removePlan(planId: string): void {
+    this.store.dispatch(removeConstructionPlan({ planId }));
   }
 
   exportNetwork(network: unknown): void {

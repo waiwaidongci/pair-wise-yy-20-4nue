@@ -1,5 +1,6 @@
 import { createAction, props } from '@ngrx/store';
 import {
+  ConstructionPlan,
   TimetableFilter,
   TrainNetwork,
   TrainStop,
@@ -20,6 +21,18 @@ export const updateTrainStop = createAction(
 );
 export const setPrintSection = createAction('[Timetable] Set print section', props<{ sectionId: string | null }>());
 export const importNetwork = createAction('[Timetable] Import network', props<{ network: TrainNetwork }>());
+export const addConstructionPlan = createAction(
+  '[Timetable] Add construction plan',
+  props<{ plan: ConstructionPlan }>(),
+);
+export const updateConstructionPlan = createAction(
+  '[Timetable] Update construction plan',
+  props<{ planId: string; changes: Partial<ConstructionPlan> }>(),
+);
+export const removeConstructionPlan = createAction(
+  '[Timetable] Remove construction plan',
+  props<{ planId: string }>(),
+);
 export const addNotice = createAction('[Timetable] Add notice', props<{ message: string }>());
 export const dismissNotice = createAction('[Timetable] Dismiss notice', props<{ index: number }>());
 export const restorePersistedState = createAction(

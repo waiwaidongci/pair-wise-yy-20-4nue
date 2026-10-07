@@ -21,7 +21,8 @@ import {
   ViewportState,
 } from '../types/timetable';
 import { formatTime } from '../utils/time';
-import { computeConflicts, visibleTimeRange } from '../utils/timetable-utils';
+import { visibleTimeRange } from '../utils/timetable-utils';
+import { reconcilePlans } from '../utils/conflict-engine';
 
 interface Point {
   x: number;
@@ -258,6 +259,7 @@ export class GraphCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
 
     const geometry = this.getGeometry(width, height);
     this.drawGrid(context, geometry, width, height);
+    this.drawConstructionPlans(context, geometry);
     this.drawConflicts(context, geometry);
     this.drawTrains(context, geometry);
     this.drawAxis(context, geometry, width, height);
@@ -292,6 +294,10 @@ export class GraphCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
             const toStop = train.stops.find((stop) => stop.stationId === to.id);
             return fromStop && toStop ? [fromStop.departure, toStop.arrival] : [];
           });
+          // 即使该时段没有运行线，打印范围也要覆盖当前施工限制窗口
+          this.network.constructionPlans
+            .filter((plan) => plan.sectionId === section.id)
+            .forEach((plan) => times.push(plan.start, plan.end));
           if (times.length > 0) {
             minTime = Math.min(...times) - 4;
             maxTime = Math.max(...times) + 4;
@@ -302,7 +308,7 @@ export class GraphCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
 
     return {
       left: this.printSectionId ? 78 : 94,
-      top: this.printSectionId ? 54 : 48,
+      top: this.printSectionId ? 92 : 48,
       right: width - 28,
       bottom: height - 30,
       minTime,
@@ -410,6 +416,74 @@ export class GraphCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
     context.fillText('时分', width - 46, 22);
   }
 
+  private drawConstructionPlans(
+    context: CanvasRenderingContext2D,
+    geometry: ReturnType<GraphCanvasComponent['getGeometry']>,
+  ): void {
+    const statuses = reconcilePlans(this.network);
+    if (statuses.length === 0) return;
+
+    context.save();
+    context.beginPath();
+    context.rect(geometry.left, geometry.top, geometry.right - geometry.left, geometry.bottom - geometry.top);
+    context.clip();
+
+    statuses.forEach((status) => {
+      const section = this.network.sections.find((candidate) => candidate.id === status.plan.sectionId);
+      if (!section) return;
+      const from = this.network.stations.find((item) => item.id === section.fromStationId);
+      const to = this.network.stations.find((item) => item.id === section.toStationId);
+      if (!from || !to) return;
+
+      const x1 = this.timeToX(status.plan.start, geometry);
+      const x2 = this.timeToX(status.plan.end, geometry);
+      const y1 = Math.min(this.kmToY(from.km, geometry), this.kmToY(to.km, geometry));
+      const y2 = Math.max(this.kmToY(from.km, geometry), this.kmToY(to.km, geometry));
+      const width = x2 - x1;
+      if (x2 < geometry.left - 40 || x1 > geometry.right + 40 || y2 < geometry.top - 40 || y1 > geometry.bottom + 40) return;
+
+      const bandColor = status.active ? 'rgba(217, 119, 6, 0.12)' : 'rgba(107, 114, 128, 0.07)';
+      context.fillStyle = bandColor;
+      context.fillRect(x1, y1, width, y2 - y1);
+
+      // 斜纹填充，提示该区间时段有施工控制
+      context.save();
+      context.beginPath();
+      context.rect(x1, y1, width, y2 - y1);
+      context.clip();
+      context.strokeStyle = status.active ? 'rgba(180, 83, 9, 0.28)' : 'rgba(107, 114, 128, 0.22)';
+      context.lineWidth = 1;
+      for (let hatch = x1 - (y2 - y1); hatch < x2 + 8; hatch += 9) {
+        context.beginPath();
+        context.moveTo(hatch, y2);
+        context.lineTo(hatch + (y2 - y1), y1);
+        context.stroke();
+      }
+      context.restore();
+
+      context.strokeStyle = status.active ? 'rgba(180, 83, 9, 0.75)' : 'rgba(107, 114, 128, 0.55)';
+      context.lineWidth = 1.2;
+      if (!status.active) context.setLineDash([5, 4]);
+      context.strokeRect(x1, y1, width, y2 - y1);
+      context.setLineDash([]);
+
+      if (status.active && width > 30) {
+        const label = `${status.plan.direction === 'up' ? '上行' : '下行'} 限速 ${status.plan.speedLimitKmh}`;
+        context.font = '700 10px "Noto Sans SC", sans-serif';
+        const labelWidth = context.measureText(label).width + 10;
+        context.fillStyle = 'rgba(146, 64, 14, 0.85)';
+        context.fillRect(x1 + 4, y1 + 4, labelWidth, 16);
+        context.fillStyle = '#fff';
+        context.textAlign = 'left';
+        context.textBaseline = 'middle';
+        context.fillText(label, x1 + 9, y1 + 12);
+        context.textBaseline = 'alphabetic';
+      }
+    });
+
+    context.restore();
+  }
+
   private drawConflicts(
     context: CanvasRenderingContext2D,
     geometry: ReturnType<GraphCanvasComponent['getGeometry']>,
@@ -494,7 +568,8 @@ export class GraphCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
       const points = this.hitPoints.get(train.id) ?? [];
       const selected = train.id === this.selectedTrainId;
       const batchSelected = this.batchSelection.includes(train.id);
-      const trainSegmentConflicts = new Set<string>();
+      const headwaySections = new Set<string>();
+      const constructionSections = new Set<string>();
       train.stops.slice(0, -1).forEach((stop, index) => {
         const next = train.stops[index + 1];
         if (!next) return;
@@ -503,7 +578,12 @@ export class GraphCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
         const departure = Math.min(stop.departure, next.arrival) + (train.id === this.draggingTrainId ? this.dragDelta : 0);
         const peers = segmentIndex.get(`${section.id}:${train.direction}`) ?? [];
         if (peers.some((peer) => peer.train.id !== train.id && Math.abs(peer.departure - departure) < section.minHeadwayMin)) {
-          trainSegmentConflicts.add(section.id);
+          headwaySections.add(section.id);
+        }
+      });
+      this.conflicts.forEach((conflict) => {
+        if (conflict.type === 'construction' && conflict.trainIds.includes(train.id) && conflict.sectionId) {
+          constructionSections.add(conflict.sectionId);
         }
       });
 
@@ -523,11 +603,18 @@ export class GraphCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
         const next = train.stops[index + 1];
         if (!next) return;
         const section = this.findSection(stop.stationId, next.stationId);
-        if (!section || !trainSegmentConflicts.has(section.id)) return;
+        if (!section) return;
         const first = points[index];
         const second = points[index + 1];
         if (!first || !second) return;
-        context.strokeStyle = '#d92d3f';
+        // 追踪间隔不足画红色，施工限速影响画橙色，两者叠加时红色优先
+        if (headwaySections.has(section.id)) {
+          context.strokeStyle = '#d92d3f';
+        } else if (constructionSections.has(section.id)) {
+          context.strokeStyle = '#d97706';
+        } else {
+          return;
+        }
         context.lineWidth = selected ? 5.5 : 3.5;
         context.globalAlpha = 0.95;
         context.beginPath();
@@ -620,9 +707,8 @@ export class GraphCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
     width: number,
     height: number,
   ): void {
-    if (!this.printSectionId) return;
     const section = this.network.sections.find((candidate) => candidate.id === this.printSectionId);
-    if (!section) return;
+    if (!this.printSectionId || !section) return;
     const from = this.network.stations.find((station) => station.id === section.fromStationId);
     const to = this.network.stations.find((station) => station.id === section.toStationId);
     context.fillStyle = '#17324d';
@@ -633,7 +719,31 @@ export class GraphCanvasComponent implements AfterViewInit, OnChanges, OnDestroy
     context.textAlign = 'right';
     context.fillStyle = '#667085';
     context.fillText(`追踪间隔 ≥ ${section.minHeadwayMin} 分 · ${section.distanceKm.toFixed(1)} km`, width - 28, 26);
+
+    // 打印件必须带上当前施工（临时限速）限制
+    const statuses = reconcilePlans(this.network).filter((status) => status.plan.sectionId === section.id);
     context.textAlign = 'left';
+    context.font = '700 11px "Noto Sans SC", sans-serif';
+    context.fillStyle = '#92400e';
+    context.fillText('当前施工限制：', geometry.left, 48);
+    context.font = '11px "Noto Sans SC", sans-serif';
+    if (statuses.length === 0) {
+      context.fillStyle = '#667085';
+      context.fillText('无登记施工计划，按正常闭塞条件放行。', geometry.left + 78, 48);
+    } else {
+      statuses.slice(0, 2).forEach((status, index) => {
+        const { plan } = status;
+        const text = `${status.active ? '● 生效' : '○ 排队'} ${formatTime(plan.start)}–${formatTime(plan.end)} ${plan.direction === 'up' ? '上行' : '下行'}线 限速 ${plan.speedLimitKmh} km/h${plan.note ? `（${plan.note}）` : ''}`;
+        context.fillStyle = status.active ? '#92400e' : '#8a8f98';
+        context.fillText(text, geometry.left + 78, 48 + index * 15);
+      });
+      if (statuses.length > 2) {
+        context.fillStyle = '#8a8f98';
+        context.fillText(`另有 ${statuses.length - 2} 份计划，详见运行图编辑页施工计划登记。`, geometry.left + 78, 48 + 2 * 15);
+      }
+    }
+
+    context.fillStyle = '#667085';
     context.fillText('铁路调度运行图系统 · 打印件', 24, height - 9);
   }
 

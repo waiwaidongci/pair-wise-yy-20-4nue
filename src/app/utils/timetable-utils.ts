@@ -1,4 +1,5 @@
 import {
+  ConstructionPlan,
   ImportedNetworkFile,
   RailSection,
   Station,
@@ -7,6 +8,7 @@ import {
   TrainNetwork,
   TrainStop,
 } from '../types/timetable';
+import { buildConflictCache, orderedConflicts } from './conflict-engine';
 
 const COLORS = ['#2563eb', '#0f766e', '#b45309', '#7c3aed', '#be123c', '#0369a1', '#4d7c0f'];
 const STATION_NAMES = [
@@ -79,7 +81,51 @@ export function createMockNetwork(): TrainNetwork {
   });
 
   applyMeetRelations(trains, stations);
-  return { lineName: '江海铁路调度台 · 北岭—终点南', stations, sections, trains };
+  const constructionPlans = buildSeedPlans(sections);
+  return { lineName: '江海铁路调度台 · 北岭—终点南', stations, sections, trains, constructionPlans };
+}
+
+/** 内置演示计划：含同向同时段互斥排队，以及与运行线时段重叠的限速。 */
+function buildSeedPlans(sections: RailSection[]): ConstructionPlan[] {
+  if (sections.length < 7) return [];
+  return [
+    {
+      id: 'PLAN-1',
+      sectionId: sections[3].id,
+      direction: 'up',
+      start: 8 * 60 + 30,
+      end: 11 * 60 + 30,
+      speedLimitKmh: 120,
+      note: '换轨施工',
+    },
+    {
+      id: 'PLAN-2',
+      sectionId: sections[3].id,
+      direction: 'up',
+      start: 10 * 60,
+      end: 12 * 60 + 30,
+      speedLimitKmh: 160,
+      note: '接触网检修（待批）',
+    },
+    {
+      id: 'PLAN-3',
+      sectionId: sections[6].id,
+      direction: 'down',
+      start: 13 * 60,
+      end: 16 * 60,
+      speedLimitKmh: 45,
+      note: '线路慢行',
+    },
+    {
+      id: 'PLAN-4',
+      sectionId: sections[1].id,
+      direction: 'up',
+      start: 6 * 60,
+      end: 8 * 60,
+      speedLimitKmh: 80,
+      note: '桥涵检查',
+    },
+  ];
 }
 
 interface BuildTrainInput {
@@ -167,15 +213,29 @@ export function normalizeImportedNetwork(file: ImportedNetworkFile, fallback: Tr
     throw new Error('JSON 数据缺少有效 trains 数组');
   }
   const stationIds = new Set(file.stations.map((station) => station.id));
+  const sectionIds = new Set(file.sections.map((section) => section.id));
   file.sections.forEach((section) => {
     if (!stationIds.has(section.fromStationId) || !stationIds.has(section.toStationId)) {
       throw new Error(`区间 ${section.id} 引用了不存在的车站`);
     }
   });
+  // 旧数据没有施工计划字段，按空计划继续可用；引用了不存在区间的计划直接忽略。
+  const constructionPlans = (file.constructionPlans ?? [])
+    .filter((plan) => plan && sectionIds.has(plan.sectionId))
+    .map((plan, index) => ({
+      ...plan,
+      id: plan.id || `IMPORT-PLAN-${index + 1}`,
+      start: Number(plan.start),
+      end: Number(plan.end),
+      speedLimitKmh: Number(plan.speedLimitKmh),
+      note: plan.note,
+    }))
+    .filter((plan) => Number.isFinite(plan.start) && Number.isFinite(plan.end) && plan.end > plan.start && plan.speedLimitKmh > 0);
   return {
     lineName: file.lineName || fallback.lineName,
     stations: file.stations,
     sections: file.sections,
+    constructionPlans,
     trains: file.trains.map((train, index) => ({
       ...train,
       id: train.id || `IMPORT-${index + 1}`,
@@ -219,122 +279,23 @@ export function getSectionEndpoints(section: RailSection, network: TrainNetwork)
   return from && to ? [from, to] : null;
 }
 
+/**
+ * 全量计算冲突（供一次性视图读取）。增量重算在 reducer 中通过
+ * buildConflictCache / refreshTrainConflicts / refreshPlanConflicts 完成。
+ */
 export function computeConflicts(network: TrainNetwork, visibleTrainIds?: Set<string>): TimetableConflict[] {
-  const conflicts: TimetableConflict[] = [];
-  const stationMap = new Map(network.stations.map((station) => [station.id, station]));
-  const sectionMap = new Map(network.sections.map((section) => [section.id, section]));
-  const stationOccupancy = new Map<string, Array<{ train: Train; stop: TrainStop }>>();
-
-  network.trains.forEach((train) => {
-    if (visibleTrainIds && !visibleTrainIds.has(train.id)) return;
-    train.stops.forEach((stop, stopIndex) => {
-      const key = `${stop.stationId}:${stop.trackId}`;
-      const bucket = stationOccupancy.get(key) ?? [];
-      bucket.push({ train, stop });
-      stationOccupancy.set(key, bucket);
-
-      const nextStop = train.stops[stopIndex + 1];
-      if (!nextStop) return;
-      const section = network.sections.find(
-        (candidate) =>
-          (candidate.fromStationId === stop.stationId && candidate.toStationId === nextStop.stationId) ||
-          (candidate.toStationId === stop.stationId && candidate.fromStationId === nextStop.stationId),
-      );
-      if (!section) return;
-      const departure = Math.min(stop.departure, nextStop.arrival);
-      const arrival = Math.max(stop.departure, nextStop.arrival);
-      const peers = network.trains.filter(
-        (candidate) =>
-          candidate.id !== train.id &&
-          candidate.direction === train.direction &&
-          (!visibleTrainIds || visibleTrainIds.has(candidate.id)),
-      );
-      peers.forEach((peer) => {
-        const peerStopsInOrder =
-          peer.stops.findIndex((item) => item.stationId === stop.stationId) <
-          peer.stops.findIndex((item) => item.stationId === nextStop.stationId);
-        if (!peerStopsInOrder) return;
-        const peerStart = peer.stops.find((item) => item.stationId === stop.stationId);
-        const peerEnd = peer.stops.find((item) => item.stationId === nextStop.stationId);
-        if (!peerStart || !peerEnd) return;
-        const peerDeparture = Math.min(peerStart.departure, peerEnd.arrival);
-        const peerArrival = Math.max(peerStart.departure, peerEnd.arrival);
-        const gap = Math.abs(peerDeparture - departure);
-        if (gap < section.minHeadwayMin) {
-          conflicts.push({
-            id: `headway:${section.id}:${train.id}:${peer.id}`,
-            type: 'headway',
-            severity: gap < section.minHeadwayMin * 0.55 ? 'danger' : 'warning',
-            title: `${sectionMap.get(section.id)?.id ?? section.id} 追踪间隔不足`,
-            detail: `${train.number} 与 ${peer.number} 在${stationMap.get(stop.stationId)?.name}—${stationMap.get(nextStop.stationId)?.name}区间发车相差 ${gap.toFixed(1)} 分，要求不少于 ${section.minHeadwayMin} 分。`,
-            trainIds: [train.id, peer.id],
-            sectionId: section.id,
-            timeRange: { start: Math.min(departure, peerDeparture), end: Math.max(arrival, peerArrival) },
-            suggestedShift: {
-              start: Math.max(1, section.minHeadwayMin - gap),
-              end: Math.max(4, section.minHeadwayMin - gap + 10),
-            },
-          });
-        }
-
-        const highSpeedAhead =
-          departure < peerDeparture &&
-          arrival > peerArrival &&
-          (train.category === '高铁' || train.category === '动车') &&
-          (peer.category === '普速' || peer.category === '货运');
-        if (highSpeedAhead) {
-          conflicts.push({
-            id: `overtake:${section.id}:${train.id}:${peer.id}`,
-            type: 'overtake',
-            severity: 'warning',
-            title: `${train.number} 将在区间追及 ${peer.number}`,
-            detail: `${train.category}列车在${stationMap.get(stop.stationId)?.name}—${stationMap.get(nextStop.stationId)?.name}区间形成越行风险，建议在前方站安排会让或调整发车时刻。`,
-            trainIds: [train.id, peer.id],
-            sectionId: section.id,
-            timeRange: { start: departure, end: arrival },
-            suggestedShift: { start: 2, end: 12 },
-          });
-        }
-      });
-    });
-  });
-
-  stationOccupancy.forEach((occupants, key) => {
-    occupants.sort((a, b) => a.stop.arrival - b.stop.arrival);
-    for (let index = 1; index < occupants.length; index += 1) {
-      const previous = occupants[index - 1];
-      const current = occupants[index];
-      const gap = current.stop.arrival - previous.stop.departure;
-      if (gap < 2) {
-        const [stationId, trackId] = key.split(':');
-        const station = stationMap.get(stationId);
-        const track = station?.tracks.find((candidate) => candidate.id === trackId);
-        conflicts.push({
-          id: `track:${stationId}:${trackId}:${previous.train.id}:${current.train.id}`,
-          type: 'track',
-          severity: gap < 0 ? 'danger' : 'warning',
-          title: `${station?.name ?? stationId} ${track?.name ?? trackId} 占用冲突`,
-          detail: `${previous.train.number} 与 ${current.train.number} 的到发线占用重叠 ${Math.max(0, -gap).toFixed(1)} 分，需要改股道或错开时刻。`,
-          trainIds: [previous.train.id, current.train.id],
-          stationId,
-          timeRange: {
-            start: Math.min(previous.stop.arrival, current.stop.arrival),
-            end: Math.max(previous.stop.departure, current.stop.departure),
-          },
-          suggestedShift: { start: Math.max(1, 2 - gap), end: Math.max(5, 8 - gap) },
-        });
-      }
-    }
-  });
-
-  return conflicts
-    .filter((conflict, index, all) => all.findIndex((item) => item.id === conflict.id) === index)
-    .sort((a, b) => a.timeRange.start - b.timeRange.start)
-    .slice(0, 400);
+  const all = orderedConflicts(buildConflictCache(network));
+  if (!visibleTrainIds) return all;
+  return all.filter(
+    (conflict) =>
+      conflict.trainIds.length === 0 || conflict.trainIds.some((trainId) => visibleTrainIds.has(trainId)),
+  );
 }
 
 export function visibleTimeRange(network: TrainNetwork): [number, number] {
-  const times = network.trains.flatMap((train) => train.stops.flatMap((stop) => [stop.arrival, stop.departure]));
+  const trainTimes = network.trains.flatMap((train) => train.stops.flatMap((stop) => [stop.arrival, stop.departure]));
+  const planTimes = network.constructionPlans.flatMap((plan) => [plan.start, plan.end]);
+  const times = [...trainTimes, ...planTimes];
   if (times.length === 0) return [0, 1440];
   return [Math.min(...times) - 10, Math.max(...times) + 10];
 }

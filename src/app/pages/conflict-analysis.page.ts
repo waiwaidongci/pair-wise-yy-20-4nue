@@ -8,7 +8,15 @@ import { TableModule } from 'primeng/table';
 import { TagModule } from 'primeng/tag';
 import { combineLatest, map } from 'rxjs';
 import { selectConflicts, selectNetwork } from '../stores/timetable.selectors';
-import { ConflictType, TimetableConflict } from '../types/timetable';
+import {
+  ConflictType,
+  RailSection,
+  Station,
+  TimetableConflict,
+  Train,
+  TrainNetwork,
+} from '../types/timetable';
+import { directionLabel } from '../utils/conflict-engine';
 import { formatTime } from '../utils/time';
 
 @Component({
@@ -22,11 +30,12 @@ import { formatTime } from '../utils/time';
         <div>
           <span>安全分析中心</span>
           <h1>冲突明细与调整窗口</h1>
-          <p>按具体区间、车站和列车列出冲突原因，并给出可执行的时间调整范围。</p>
+          <p>按具体区间、车站、列车和施工计划列出冲突原因，并给出可执行的时间调整范围。</p>
         </div>
         <div class="analysis-kpis">
           <div><small>严重</small><strong class="danger">{{ vm.danger }}</strong></div>
           <div><small>警告</small><strong class="warning">{{ vm.warning }}</strong></div>
+          <div><small>施工影响</small><strong class="warning">{{ vm.construction }}</strong></div>
           <div><small>冲突总数</small><strong>{{ vm.conflicts.length }}</strong></div>
         </div>
       </header>
@@ -42,7 +51,7 @@ import { formatTime } from '../utils/time';
         ></p-select>
         <span>共 {{ filteredConflicts(vm.conflicts).length }} 条，点击行可定位到列车</span>
         <div class="spacer"></div>
-        <p-button icon="pi pi-download" label="导出分析 CSV" size="small" (onClick)="exportCsv(vm.conflicts)"></p-button>
+        <p-button icon="pi pi-download" label="导出分析 CSV" size="small" (onClick)="exportCsv(vm)"></p-button>
       </div>
 
       <p-table
@@ -60,6 +69,8 @@ import { formatTime } from '../utils/time';
             <th>等级</th>
             <th>类型</th>
             <th>位置</th>
+            <th>受影响列车</th>
+            <th>施工计划</th>
             <th>冲突说明</th>
             <th>时间范围</th>
             <th>建议平移</th>
@@ -77,6 +88,28 @@ import { formatTime } from '../utils/time';
             <td>
               <strong>{{ location(conflict, vm.network.stations, vm.network.sections) }}</strong>
             </td>
+            <td class="train-cell">
+              <ng-container *ngIf="trainNames(conflict, vm.network.trains) as names">
+                <span *ngIf="names.length; else noTrain">{{ names.join(' / ') }}</span>
+                <ng-template #noTrain><span class="muted">—</span></ng-template>
+              </ng-container>
+            </td>
+            <td class="plan-cell">
+              <ng-container *ngIf="planOf(conflict, vm) as plan">
+                <div class="plan-chip">
+                  <i class="pi pi-wrench"></i>
+                  <div>
+                    <strong>{{ formatTime(plan.start) }}–{{ formatTime(plan.end) }}</strong>
+                    <small>
+                      {{ planSection(plan.sectionId, vm.network.sections, vm.network.stations) }}
+                      · {{ directionLabel(plan.direction) }}线
+                      · 限速 {{ plan.speedLimitKmh }} km/h
+                    </small>
+                  </div>
+                </div>
+              </ng-container>
+              <span *ngIf="!conflict.planId" class="muted">—</span>
+            </td>
             <td class="detail-cell">{{ conflict.detail }}</td>
             <td>{{ formatTime(conflict.timeRange.start) }}–{{ formatTime(conflict.timeRange.end) }}</td>
             <td class="suggest-cell">
@@ -86,7 +119,7 @@ import { formatTime } from '../utils/time';
         </ng-template>
         <ng-template pTemplate="emptymessage">
           <tr>
-            <td colspan="6">当前没有冲突记录。</td>
+            <td colspan="8">当前没有冲突记录。</td>
           </tr>
         </ng-template>
       </p-table>
@@ -100,6 +133,8 @@ export class ConflictAnalysisPageComponent {
     { label: '区间追踪', value: 'headway' },
     { label: '到发线占用', value: 'track' },
     { label: '越行风险', value: 'overtake' },
+    { label: '施工限速', value: 'construction' },
+    { label: '计划互斥排队', value: 'plan-overlap' },
   ];
   typeFilter: ConflictType | 'all' = 'all';
 
@@ -112,6 +147,7 @@ export class ConflictAnalysisPageComponent {
       network,
       danger: conflicts.filter((conflict) => conflict.severity === 'danger').length,
       warning: conflicts.filter((conflict) => conflict.severity === 'warning').length,
+      construction: conflicts.filter((conflict) => conflict.type === 'construction').length,
     })),
   );
 
@@ -124,6 +160,8 @@ export class ConflictAnalysisPageComponent {
   typeLabel(type: ConflictType): string {
     if (type === 'headway') return '区间追踪';
     if (type === 'track') return '到发线占用';
+    if (type === 'construction') return '施工限速';
+    if (type === 'plan-overlap') return '计划互斥排队';
     return '越行风险';
   }
 
@@ -142,8 +180,31 @@ export class ConflictAnalysisPageComponent {
     return `${from ?? ''}—${to ?? ''}`;
   }
 
+  trainNames(conflict: TimetableConflict, trains: Train[]): string[] {
+    return conflict.trainIds
+      .map((trainId) => trains.find((train) => train.id === trainId)?.number ?? trainId);
+  }
+
+  planOf(conflict: TimetableConflict, vm: { network: Pick<TrainNetwork, 'constructionPlans'> }) {
+    if (!conflict.planId) return null;
+    return vm.network.constructionPlans.find((plan) => plan.id === conflict.planId) ?? null;
+  }
+
+  planSection(sectionId: string | undefined, sections: RailSection[], stations: Station[]): string {
+    if (!sectionId) return '—';
+    const section = sections.find((candidate) => candidate.id === sectionId);
+    if (!section) return sectionId;
+    const from = stations.find((station) => station.id === section.fromStationId)?.name ?? section.fromStationId;
+    const to = stations.find((station) => station.id === section.toStationId)?.name ?? section.toStationId;
+    return `${from}—${to}`;
+  }
+
   formatTime(value: number): string {
     return formatTime(value);
+  }
+
+  directionLabel(direction: 'up' | 'down'): string {
+    return directionLabel(direction);
   }
 
   selectConflict(conflict: TimetableConflict | TimetableConflict[] | null | undefined): void {
@@ -158,19 +219,28 @@ export class ConflictAnalysisPageComponent {
     }
   }
 
-  exportCsv(conflicts: TimetableConflict[]): void {
-    const header = ['等级', '类型', '列车', '位置', '原因', '建议开始分钟', '建议结束分钟'];
-    const lines = conflicts.map((conflict) => [
-      conflict.severity,
-      this.typeLabel(conflict.type),
-      conflict.trainIds.join(' / '),
-      conflict.sectionId ?? conflict.stationId ?? '',
-      conflict.detail.replaceAll(',', '，'),
-      conflict.suggestedShift.start,
-      conflict.suggestedShift.end,
-    ]);
+  exportCsv(vm: { conflicts: TimetableConflict[]; network: TrainNetwork }): void {
+    const header = ['等级', '类型', '受影响列车', '位置', '施工计划', '原因', '建议开始分钟', '建议结束分钟'];
+    const lines = this.filteredConflicts(vm.conflicts).map((conflict) => {
+      const plan = conflict.planId
+        ? vm.network.constructionPlans.find((candidate) => candidate.id === conflict.planId)
+        : undefined;
+      const planText = plan
+        ? `${formatTime(plan.start)}-${formatTime(plan.end)} 限速${plan.speedLimitKmh}km/h`
+        : '';
+      return [
+        conflict.severity,
+        this.typeLabel(conflict.type),
+        this.trainNames(conflict, vm.network.trains).join(' / '),
+        this.location(conflict, vm.network.stations, vm.network.sections),
+        planText,
+        conflict.detail.replaceAll(',', '，').replaceAll('\n', ' '),
+        conflict.suggestedShift.start,
+        conflict.suggestedShift.end,
+      ];
+    });
     const csv = [header, ...lines].map((row) => row.join(',')).join('\n');
-    const blob = new Blob([`\ufeff${csv}`], { type: 'text/csv;charset=utf-8' });
+    const blob = new Blob([`﻿${csv}`], { type: 'text/csv;charset=utf-8' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
     link.download = '运行图冲突分析.csv';

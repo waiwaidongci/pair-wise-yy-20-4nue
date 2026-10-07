@@ -2,7 +2,7 @@ import { CommonModule } from '@angular/common';
 import { ChangeDetectionStrategy, Component, EventEmitter, Input, Output } from '@angular/core';
 import { ButtonModule } from 'primeng/button';
 import { TagModule } from 'primeng/tag';
-import { TimetableConflict } from '../types/timetable';
+import { ConstructionPlan, TimetableConflict } from '../types/timetable';
 import { formatTime } from '../utils/time';
 
 @Component({
@@ -24,6 +24,7 @@ import { formatTime } from '../utils/time';
           class="conflict-card"
           *ngFor="let conflict of conflicts"
           [class.conflict-card--danger]="conflict.severity === 'danger'"
+          [class.conflict-card--queue]="conflict.type === 'plan-overlap'"
           (click)="conflictSelected.emit(conflict)"
         >
           <div class="conflict-card__top">
@@ -39,6 +40,11 @@ import { formatTime } from '../utils/time';
           </div>
           <strong>{{ conflict.title }}</strong>
           <p>{{ conflict.detail }}</p>
+          <div class="conflict-plan" *ngIf="planOf(conflict) as plan">
+            <i class="pi pi-wrench"></i>
+            关联施工计划：{{ formatTime(plan.start) }}–{{ formatTime(plan.end) }}
+            限速 {{ plan.speedLimitKmh }} km/h<span *ngIf="plan.note"> · {{ plan.note }}</span>
+          </div>
           <div class="suggestion">
             <span>建议调整</span>
             <strong>
@@ -51,7 +57,7 @@ import { formatTime } from '../utils/time';
         <div class="clear-state">
           <i class="pi pi-check-circle"></i>
           <strong>当前筛选范围无冲突</strong>
-          <p>区间追踪间隔、到发线占用与越行条件均已满足。</p>
+          <p>区间追踪间隔、到发线占用、施工限速与越行条件均已满足。</p>
         </div>
       </ng-template>
     </section>
@@ -113,6 +119,12 @@ import { formatTime } from '../utils/time';
         background: #fffafa;
       }
 
+      .conflict-card--queue {
+        border-color: #cdd7e2;
+        border-left-color: #64748b;
+        background: #f8fafc;
+      }
+
       .conflict-card__top {
         display: flex;
         align-items: center;
@@ -133,6 +145,10 @@ import { formatTime } from '../utils/time';
         color: #b42318;
       }
 
+      .conflict-card--queue .conflict-kind {
+        color: #475569;
+      }
+
       .conflict-card > strong {
         display: block;
         margin-top: 7px;
@@ -147,6 +163,23 @@ import { formatTime } from '../utils/time';
         line-height: 1.55;
       }
 
+      .conflict-plan {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        margin-bottom: 8px;
+        padding: 5px 7px;
+        border-radius: 4px;
+        background: #fdf3e3;
+        color: #92400e;
+        font-size: 10px;
+        line-height: 1.4;
+      }
+
+      .conflict-plan i {
+        font-size: 11px;
+      }
+
       .suggestion {
         display: flex;
         align-items: center;
@@ -155,6 +188,10 @@ import { formatTime } from '../utils/time';
         border-top: 1px dashed #e6d6b4;
         color: #66758a;
         font-size: 10px;
+      }
+
+      .conflict-card--queue .suggestion {
+        border-top-color: #e2e8f0;
       }
 
       .suggestion strong {
@@ -192,12 +229,20 @@ import { formatTime } from '../utils/time';
 })
 export class ConflictPanelComponent {
   @Input() conflicts: TimetableConflict[] = [];
+  @Input() plans: ConstructionPlan[] = [];
   @Output() conflictSelected = new EventEmitter<TimetableConflict>();
 
   typeLabel(conflict: TimetableConflict): string {
     if (conflict.type === 'headway') return '区间追踪';
     if (conflict.type === 'track') return '到发线占用';
+    if (conflict.type === 'construction') return '施工限速';
+    if (conflict.type === 'plan-overlap') return '计划互斥排队';
     return '越行风险';
+  }
+
+  planOf(conflict: TimetableConflict): ConstructionPlan | undefined {
+    if (!conflict.planId) return undefined;
+    return this.plans.find((plan) => plan.id === conflict.planId);
   }
 
   formatTime(value: number): string {
